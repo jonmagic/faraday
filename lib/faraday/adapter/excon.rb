@@ -8,8 +8,8 @@ module Faraday
 
         conn = ::Excon.new(env[:url].to_s)
         if ssl = (env[:url].scheme == 'https' && env[:ssl])
-          ::Excon.ssl_verify_peer = !!ssl.fetch(:verify, true)
-          ::Excon.ssl_ca_path = ssl[:ca_file] if ssl[:ca_file]
+          ::Excon.defaults['ssl_verify_peer'] = !!ssl.fetch(:verify, true)
+          ::Excon.defaults['ssl_ca_path'] = ssl[:ca_file] if ssl[:ca_file]
         end
 
         resp = conn.request \
