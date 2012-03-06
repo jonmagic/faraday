@@ -13,27 +13,37 @@ module Faraday
         url = env[:url]
         req = env[:request]
 
-        http = net_http_class(env).new(url.host, url.inferred_port)
+        http = net_http_class(env).new(url.host, url.port)
 
-        if http.use_ssl = (url.scheme == 'https' && env[:ssl])
-          ssl = env[:ssl]
-          http.verify_mode = ssl[:verify_mode] || ssl.fetch(:verify, true) ?
-                               OpenSSL::SSL::VERIFY_PEER : OpenSSL::SSL::VERIFY_NONE
-          http.cert        = ssl[:client_cert] if ssl[:client_cert]
-          http.key         = ssl[:client_key]  if ssl[:client_key]
-          http.ca_file     = ssl[:ca_file]     if ssl[:ca_file]
-          http.ca_path     = ssl[:ca_path]     if ssl[:ca_path]
-          http.cert_store  = ssl[:cert_store]  if ssl[:cert_store]
+        if http.use_ssl = (url.scheme == 'https' && (ssl = env[:ssl]) && true)
+          http.verify_mode = ssl[:verify_mode] || begin
+            if ssl.fetch(:verify, true)
+              # Use the default cert store by default, i.e. system ca certs
+              store = OpenSSL::X509::Store.new
+              store.set_default_paths
+              http.cert_store = store
+              OpenSSL::SSL::VERIFY_PEER
+            else
+              OpenSSL::SSL::VERIFY_NONE
+            end
+          end
+
+          http.cert         = ssl[:client_cert]  if ssl[:client_cert]
+          http.key          = ssl[:client_key]   if ssl[:client_key]
+          http.ca_file      = ssl[:ca_file]      if ssl[:ca_file]
+          http.ca_path      = ssl[:ca_path]      if ssl[:ca_path]
+          http.cert_store   = ssl[:cert_store]   if ssl[:cert_store]
+          http.verify_depth = ssl[:verify_depth] if ssl[:verify_depth]
         end
 
         http.read_timeout = http.open_timeout = req[:timeout] if req[:timeout]
         http.open_timeout = req[:open_timeout]                if req[:open_timeout]
 
-        if :get != env[:method]
+        if :get != env[:method] or env[:body]
           http_request = Net::HTTPGenericRequest.new \
             env[:method].to_s.upcase,    # request method
-            !!env[:body],                # is there data
-            true,                        # does net/http love you, true or false?
+            !!env[:body],                # is there request body
+            :head != env[:method],       # is there response body
             url.request_uri,             # request uri path
             env[:request_headers]        # request headers
 
@@ -44,7 +54,7 @@ module Faraday
         end
 
         begin
-          http_response = if :get == env[:method]
+          http_response = if :get == env[:method] and env[:body].nil?
             # prefer `get` to `request` because the former handles gzip (ruby 1.9)
             http.get url.request_uri, env[:request_headers]
           else
@@ -61,6 +71,8 @@ module Faraday
         end
 
         @app.call env
+      rescue Timeout::Error => err
+        raise Faraday::Error::TimeoutError, err
       end
 
       def net_http_class(env)

@@ -1,7 +1,8 @@
 module Faraday
-  VERSION = "0.7.0"
+  VERSION = "0.8.0.rc2"
 
   class << self
+    attr_accessor :root_path, :lib_path
     attr_accessor :default_adapter
     attr_writer   :default_connection
 
@@ -10,29 +11,54 @@ module Faraday
       Faraday::Connection.new(url, options, &block)
     end
 
+    def require_libs(*libs)
+      libs.each do |lib|
+        require "#{lib_path}/#{lib}"
+      end
+    end
+
+    alias require_lib require_libs
+
   private
     def method_missing(name, *args, &block)
       default_connection.send(name, *args, &block)
     end
   end
 
+  self.root_path = File.expand_path "..", __FILE__
+  self.lib_path = File.expand_path "../faraday", __FILE__
   self.default_adapter = :net_http
 
   def self.default_connection
     @default_connection ||= Connection.new
   end
 
+  module MiddlewareRegistry
+    # Internal: Register middleware class(es) on the current module.
+    #
+    # mapping - A Hash mapping Symbol keys to classes. See
+    #           Faraday.register_middleware for more details.
+    def register_middleware(mapping)
+      (@registered_middleware ||= {}).update(mapping)
+    end
+
+    # Internal: Lookup middleware class with a registered Symbol shortcut.
+    #
+    # Returns a middleware Class.
+    def lookup_middleware(key)
+      unless defined? @registered_middleware and found = @registered_middleware[key]
+        raise "#{key.inspect} is not registered on #{self}"
+      end
+      found = @registered_middleware[key] = found.call if found.is_a? Proc
+      found.is_a?(Module) ? found : const_get(found)
+    end
+  end
+
   module AutoloadHelper
-    def register_lookup_modules(mods)
-      (@lookup_module_index ||= {}).update(mods)
-    end
-
-    def lookup_module(key)
-      return if !@lookup_module_index
-      const_get @lookup_module_index[key] || key
-    end
-
     def autoload_all(prefix, options)
+      if prefix =~ /^faraday(\/|$)/i
+        prefix = File.join(Faraday.root_path, prefix)
+      end
       options.each do |const_name, path|
         autoload const_name, File.join(prefix, path)
       end
@@ -54,7 +80,30 @@ module Faraday
 
   extend AutoloadHelper
 
-  autoload_all 'faraday',
+  # Public: register middleware classes under a short name.
+  #
+  # type    - A Symbol specifying the kind of middleware (default: :middleware)
+  # mapping - A Hash mapping Symbol keys to classes. Classes can be expressed
+  #           as fully qualified constant, or a Proc that will be lazily called
+  #           to return the former.
+  #
+  # Examples
+  #
+  #   Faraday.register_middleware :aloha => MyModule::Aloha
+  #   Faraday.register_middleware :response, :boom => MyModule::Boom
+  #
+  #   # shortcuts are now available in Builder:
+  #   builder.use :aloha
+  #   builder.response :boom
+  #
+  # Returns nothing.
+  def self.register_middleware type, mapping = nil
+    type, mapping = :middleware, type if mapping.nil?
+    component = self.const_get(type.to_s.capitalize)
+    component.register_middleware(mapping)
+  end
+
+  autoload_all "faraday",
     :Middleware      => 'middleware',
     :Builder         => 'builder',
     :Request         => 'request',
@@ -62,12 +111,10 @@ module Faraday
     :CompositeReadIO => 'upload_io',
     :UploadIO        => 'upload_io',
     :Parts           => 'upload_io'
+
+  require_libs "utils", "connection", "adapter", "error"
 end
 
-require 'faraday/utils'
-require 'faraday/connection'
-require 'faraday/adapter'
-require 'faraday/error'
 
 # not pulling in active-support JUST for this method.
 class Object

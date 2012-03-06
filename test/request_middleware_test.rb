@@ -1,14 +1,13 @@
+# encoding: utf-8
 require File.expand_path(File.join(File.dirname(__FILE__), 'helper'))
-require 'rack/utils'
 
-Faraday::CompositeReadIO.send :attr_reader, :ios
+Faraday::CompositeReadIO.class_eval { attr_reader :ios }
 
 class RequestMiddlewareTest < Faraday::TestCase
   def setup
     @conn = Faraday.new do |b|
       b.request :multipart
       b.request :url_encoded
-      b.request :json
       b.adapter :test do |stub|
         stub.post('/echo') do |env|
           posted_as = env[:request_headers]['Content-Type']
@@ -30,22 +29,10 @@ class RequestMiddlewareTest < Faraday::TestCase
     assert_equal({ :some => 'data' }, response.body)
   end
 
-  def test_json_encodes_hash
-    response = @conn.post('/echo', { :fruit => %w[apples oranges] }, 'content-type' => 'application/json')
-    assert_equal 'application/json', response.headers['Content-Type']
-    assert_equal '{"fruit":["apples","oranges"]}', response.body
-  end
-
-  def test_json_skips_encoding_for_strings
-    response = @conn.post('/echo', '{"a":"b"}', 'content-type' => 'application/json')
-    assert_equal 'application/json', response.headers['Content-Type']
-    assert_equal '{"a":"b"}', response.body
-  end
-
   def test_url_encoded_no_header
     response = @conn.post('/echo', { :fruit => %w[apples oranges] })
     assert_equal 'application/x-www-form-urlencoded', response.headers['Content-Type']
-    assert_equal 'fruit[]=apples&fruit[]=oranges', response.body
+    assert_equal 'fruit%5B%5D=apples&fruit%5B%5D=oranges', response.body
   end
 
   def test_url_encoded_with_header
@@ -58,7 +45,20 @@ class RequestMiddlewareTest < Faraday::TestCase
     response = @conn.post('/echo', { :user => {:name => 'Mislav', :web => 'mislav.net'} })
     assert_equal 'application/x-www-form-urlencoded', response.headers['Content-Type']
     expected = { 'user' => {'name' => 'Mislav', 'web' => 'mislav.net'} }
-    assert_equal expected, Rack::Utils.parse_nested_query(response.body)
+    assert_equal expected, Faraday::Utils.parse_nested_query(response.body)
+  end
+
+  def test_url_encoded_unicode
+    err = capture_warnings {
+      response = @conn.post('/echo', {:str => "eé cç aã aâ"})
+      assert_equal "str=e%C3%A9+c%C3%A7+a%C3%A3+a%C3%A2", response.body
+    }
+    assert err.empty?
+  end
+
+  def test_url_encoded_nested_keys
+    response = @conn.post('/echo', {'a'=>{'b'=>{'c'=>['d']}}})
+    assert_equal "a%5Bb%5D%5Bc%5D%5B%5D=d", response.body
   end
 
   def test_multipart
@@ -82,4 +82,27 @@ class RequestMiddlewareTest < Faraday::TestCase
     end
     assert_equal [], regexes
   end
+  
+  def test_multipart_with_arrays
+    # assume params are out of order
+    regexes = [
+      /name\=\"a\"/,
+      /name=\"b\[\]\[c\]\"\; filename\=\"request_middleware_test\.rb\"/,
+      /name=\"b\[\]\[d\]\"/]
+
+    payload = {:a => 1, :b =>[{:c => Faraday::UploadIO.new(__FILE__, 'text/x-ruby'), :d => 2}]}
+    response = @conn.post('/echo', payload)
+
+    assert_kind_of Faraday::CompositeReadIO, response.body
+    assert_equal "multipart/form-data;boundary=%s" % Faraday::Request::Multipart::DEFAULT_BOUNDARY,
+      response.headers['Content-Type']
+
+    response.body.send(:ios).map{|io| io.read}.each do |io|
+      if re = regexes.detect { |r| io =~ r }
+        regexes.delete re
+      end
+    end
+    assert_equal [], regexes
+  end
+  
 end

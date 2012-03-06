@@ -1,5 +1,5 @@
-require 'rubygems'
 require 'test/unit'
+require 'stringio'
 
 if ENV['LEFTRIGHT']
   begin
@@ -9,11 +9,7 @@ if ENV['LEFTRIGHT']
   end
 end
 
-unless $LOAD_PATH.include? 'lib'
-  $LOAD_PATH.unshift(File.dirname(__FILE__))
-  $LOAD_PATH.unshift(File.join($LOAD_PATH.first, '..', 'lib'))
-end
-require 'faraday'
+require File.expand_path('../../lib/faraday', __FILE__)
 
 begin
   require 'ruby-debug'
@@ -28,12 +24,22 @@ module Faraday
     LIVE_SERVER = case ENV['LIVE']
       when /^http/ then ENV['LIVE']
       when nil     then nil
-      else 'http://localhost:4567'
+      else 'http://127.0.0.1:4567'
     end
 
     def test_default
       assert true
     end unless defined? ::MiniTest
+
+    def capture_warnings
+      old, $stderr = $stderr, StringIO.new
+      begin
+        yield
+        $stderr.string
+      ensure
+        $stderr = old
+      end
+    end
   end
 end
 

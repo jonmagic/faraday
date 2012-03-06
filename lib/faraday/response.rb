@@ -5,8 +5,8 @@ module Faraday
     # Used for simple response middleware.
     class Middleware < Faraday::Middleware
       def call(env)
-        @app.call(env).on_complete do |env|
-          on_complete(env)
+        @app.call(env).on_complete do |environment|
+          on_complete(environment)
         end
       end
 
@@ -14,19 +14,20 @@ module Faraday
       # Calls the `parse` method if defined
       def on_complete(env)
         if respond_to? :parse
-          env[:body] = parse(env[:body])
+          env[:body] = parse(env[:body]) unless [204,304].index env[:status]
         end
       end
     end
 
     extend Forwardable
     extend AutoloadHelper
+    extend MiddlewareRegistry
 
     autoload_all 'faraday/response',
       :RaiseError => 'raise_error',
       :Logger     => 'logger'
 
-    register_lookup_modules \
+    register_middleware \
       :raise_error => :RaiseError,
       :logger      => :Logger
 
@@ -72,7 +73,7 @@ module Faraday
     end
 
     def success?
-      status == 200
+      (200..299).include?(status)
     end
 
     # because @on_complete_callbacks cannot be marshalled

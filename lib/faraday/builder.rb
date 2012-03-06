@@ -8,10 +8,6 @@ module Faraday
   class Builder
     attr_accessor :handlers
 
-    def self.create
-      new { |builder| yield builder }
-    end
-
     # Error raised when trying to modify the stack after calling `lock!`
     class StackLocked < RuntimeError; end
 
@@ -91,24 +87,24 @@ module Faraday
       @handlers.frozen?
     end
 
-    def use(klass, *args)
-      raise_if_locked
-      block = block_given? ? Proc.new : nil
-      @handlers << self.class::Handler.new(klass, *args, &block)
+    def use(klass, *args, &block)
+      if klass.is_a? Symbol
+        use_symbol(Faraday::Middleware, klass, *args, &block)
+      else
+        raise_if_locked
+        @handlers << self.class::Handler.new(klass, *args, &block)
+      end
     end
 
-    def request(key, *args)
-      block = block_given? ? Proc.new : nil
+    def request(key, *args, &block)
       use_symbol(Faraday::Request, key, *args, &block)
     end
 
-    def response(key, *args)
-      block = block_given? ? Proc.new : nil
+    def response(key, *args, &block)
       use_symbol(Faraday::Response, key, *args, &block)
     end
 
-    def adapter(key, *args)
-      block = block_given? ? Proc.new : nil
+    def adapter(key, *args, &block)
       use_symbol(Faraday::Adapter, key, *args, &block)
     end
 
@@ -146,9 +142,8 @@ module Faraday
       raise StackLocked, "can't modify middleware stack after making a request" if locked?
     end
 
-    def use_symbol(mod, key, *args)
-      block = block_given? ? Proc.new : nil
-      use(mod.lookup_module(key), *args, &block)
+    def use_symbol(mod, key, *args, &block)
+      use(mod.lookup_middleware(key), *args, &block)
     end
 
     def assert_index(index)

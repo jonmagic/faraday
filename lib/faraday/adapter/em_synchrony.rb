@@ -1,9 +1,19 @@
+require 'uri'
+
 module Faraday
   class Adapter
     class EMSynchrony < Faraday::Adapter
+
       dependency do
         require 'em-synchrony/em-http'
+        require 'em-synchrony/em-multi'
         require 'fiber'
+      end
+
+      self.supports_parallel = true
+
+      def self.setup_parallel_manager(options = {})
+        ParallelManager.new
       end
 
       def call(env)
@@ -22,10 +32,10 @@ module Faraday
 
         if req = env[:request]
           if proxy = req[:proxy]
-            uri = Addressable::URI.parse(proxy[:uri])
+            uri = URI.parse(proxy[:uri])
             options[:proxy] = {
               :host => uri.host,
-              :port => uri.inferred_port
+              :port => uri.port
             }
             if proxy[:username] && proxy[:password]
               options[:proxy][:authorization] = [proxy[:username], proxy[:password]]
@@ -38,22 +48,41 @@ module Faraday
           end
         end
 
-        client = nil
-        block = lambda { request.send env[:method].to_s.downcase.to_sym, options }
-        if !EM.reactor_running?
-          EM.run {
-            Fiber.new do
-              client = block.call
-              EM.stop
-            end.resume
-          }
-        else
-          client = block.call
-        end
+        http_method = env[:method].to_s.downcase.to_sym
 
-        save_response(env, client.response_header.status, client.response) do |response_headers|
-          client.response_header.each do |name, value|
-            response_headers[name.to_sym] = value
+        # Queue requests for parallel execution.
+        if env[:parallel_manager]
+          env[:parallel_manager].add(request, http_method, options) do |resp|
+            save_response(env, resp.response_header.status, resp.response) do |resp_headers|
+              resp.response_header.each do |name, value|
+                resp_headers[name.to_sym] = value
+              end
+            end
+
+            # Finalize the response object with values from `env`.
+            env[:response].finish(env)
+          end
+
+        # Execute single request.
+        else
+          client = nil
+          block = lambda { request.send(http_method, options) }
+
+          if !EM.reactor_running?
+            EM.run do
+              Fiber.new {
+                client = block.call
+                EM.stop
+              }.resume
+            end
+          else
+            client = block.call
+          end
+
+          save_response(env, client.response_header.status, client.response) do |resp_headers|
+            client.response_header.each do |name, value|
+              resp_headers[name.to_sym] = value
+            end
           end
         end
 
@@ -62,5 +91,26 @@ module Faraday
         raise Error::ConnectionFailed, $!
       end
     end
+  end
+end
+
+require 'faraday/adapter/em_synchrony/parallel_manager'
+
+# add missing patch(), options() methods
+EventMachine::HTTPMethods.module_eval do
+  ([:patch, :options] - instance_methods).each do |type|
+    module_eval %[
+      def #{type}(options = {}, &blk)
+        f = Fiber.current
+        conn = setup_request(:#{type}, options, &blk)
+        if conn.error.nil?
+          conn.callback { f.resume(conn) }
+          conn.errback  { f.resume(conn) }
+          Fiber.yield
+        else
+          conn
+        end
+      end
+    ]
   end
 end

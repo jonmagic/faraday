@@ -13,6 +13,9 @@ tmtags
 ## VIM
 *.swp
 
+## RUBYMINE
+.idea
+
 ## PROJECT::GENERAL
 coverage
 rdoc
@@ -24,5 +27,8 @@ pkg/*
 doc
 log
 Gemfile.lock
+.rvmrc
+.rbenv*
 
 ## PROJECT::SPECIFIC
+.rbx

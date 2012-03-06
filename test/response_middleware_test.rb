@@ -23,7 +23,7 @@ class ResponseMiddlewareTest < Faraday::TestCase
       @conn.get('ok')
     end
   end
-  
+
   def test_raises_not_found
     error = assert_raises Faraday::Error::ResourceNotFound do
       @conn.get('not-found')
@@ -31,7 +31,7 @@ class ResponseMiddlewareTest < Faraday::TestCase
     assert_equal 'the server responded with status 404', error.message
     assert_equal 'because', error.response[:headers]['X-Reason']
   end
-  
+
   def test_raises_error
     error = assert_raises Faraday::Error::ClientError do
       @conn.get('error')
@@ -39,9 +39,36 @@ class ResponseMiddlewareTest < Faraday::TestCase
     assert_equal 'the server responded with status 500', error.message
     assert_equal 'bailout', error.response[:headers]['X-Error']
   end
-  
+
   def test_upcase
     @conn.builder.insert(0, ResponseUpcaser)
     assert_equal '<BODY></BODY>', @conn.get('ok').body
+  end
+end
+
+class ResponseNoBodyMiddleWareTest < Faraday::TestCase
+  def setup
+    @conn = Faraday.new do |b|
+      b.response :raise_error
+      b.adapter :test do |stub|
+        stub.get('not_modified') { [304, nil, nil] }
+        stub.get('no_content') { [204, nil, nil] }
+      end
+    end
+    @conn.builder.insert(0, NotCalled)
+  end
+
+  class NotCalled < Faraday::Response::Middleware
+    def parse(body)
+      raise "this should not be called"
+    end
+  end
+
+  def test_204
+    assert_equal nil, @conn.get('no_content').body
+  end
+
+  def test_304
+    assert_equal nil, @conn.get('not_modified').body
   end
 end

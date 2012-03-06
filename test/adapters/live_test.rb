@@ -1,4 +1,4 @@
-require File.expand_path(File.join(File.dirname(__FILE__), '..', 'helper'))
+require File.expand_path("../../helper", __FILE__)
 
 if !Faraday::TestCase::LIVE_SERVER
   warn "warning: test server not specified; skipping live server tests"
@@ -6,10 +6,12 @@ else
   module Adapters
     class LiveTest < Faraday::TestCase
       adapters = if ENV['ADAPTER']
-        ENV['ADAPTER'].split(':').map { |name| Faraday::Adapter.lookup_module name.to_sym }
+        ENV['ADAPTER'].split(':').map { |name| Faraday::Adapter.lookup_middleware name.to_sym }
       else
         loaded_adapters  = Faraday::Adapter.all_loaded_constants
-        loaded_adapters -= [Faraday::Adapter::ActionDispatch]
+        loaded_adapters -= [Faraday::Adapter::Test, Faraday::Adapter::ActionDispatch]
+        # https://github.com/geemus/excon/issues/98
+        loaded_adapters -= [Faraday::Adapter::Excon] if defined? RUBY_ENGINE and "rbx" == RUBY_ENGINE
         loaded_adapters << :default
       end
 
@@ -27,8 +29,8 @@ else
 
         define_method "test_#{adapter}_GET_retrieves_the_response_headers" do
           response = create_connection(adapter).get('hello_world')
-          assert_match /text\/html/, response.headers['Content-Type'], 'original case fail'
-          assert_match /text\/html/, response.headers['content-type'], 'lowercase fail'
+          assert_match(/text\/html/, response.headers['Content-Type'], 'original case fail')
+          assert_match(/text\/html/, response.headers['content-type'], 'lowercase fail')
         end
 
         # https://github.com/geemus/excon/issues/10
@@ -36,6 +38,17 @@ else
           define_method "test_#{adapter}_GET_handles_headers_with_multiple_values" do
             response = create_connection(adapter).get('multi')
             assert_equal 'one, two', response.headers['set-cookie']
+          end
+        end
+
+        # https://github.com/dbalatero/typhoeus/issues/75
+        # https://github.com/toland/patron/issues/52
+        unless %[Faraday::Adapter::Typhoeus Faraday::Adapter::Patron].include? adapter.to_s
+          define_method "test_#{adapter}_GET_with_body" do
+            response = create_connection(adapter).get('echo') do |req|
+              req.body = {'bodyrock' => true}
+            end
+            assert_equal %(get {"bodyrock"=>"true"}), response.body
           end
         end
 
@@ -56,7 +69,7 @@ else
         end
 
         define_method "test_#{adapter}_POST_retrieves_the_response_headers" do
-          assert_match /text\/html/, create_connection(adapter).post('echo_name').headers['content-type']
+          assert_match(/text\/html/, create_connection(adapter).post('echo_name').headers['content-type'])
         end
 
         define_method "test_#{adapter}_POST_sends_files" do
@@ -90,30 +103,28 @@ else
         # https://github.com/dbalatero/typhoeus/issues/84
         if ENV['FORCE'] || !%w[Faraday::Adapter::Patron Faraday::Adapter::Typhoeus].include?(adapter.to_s)
           define_method "test_#{adapter}_PUT_retrieves_the_response_headers" do
-            assert_match /text\/html/, create_connection(adapter).put('echo_name').headers['content-type']
+            assert_match(/text\/html/, create_connection(adapter).put('echo_name').headers['content-type'])
           end
         end
 
         # https://github.com/toland/patron/issues/34
-        unless %w[Faraday::Adapter::Patron Faraday::Adapter::EMSynchrony].include? adapter.to_s
+        unless %w[Faraday::Adapter::Patron].include? adapter.to_s
           define_method "test_#{adapter}_PATCH_send_url_encoded_params" do
             resp = create_connection(adapter).patch('echo_name', 'name' => 'zack')
             assert_equal %("zack"), resp.body
           end
         end
 
-        unless %[Faraday::Adapter::EMSynchrony] == adapter.to_s
-          define_method "test_#{adapter}_OPTIONS" do
-            resp = create_connection(adapter).run_request(:options, '/options', nil, {})
-            assert_equal "hi", resp.body
-          end
+        define_method "test_#{adapter}_OPTIONS" do
+          resp = create_connection(adapter).run_request(:options, '/options', nil, {})
+          assert_equal "hi", resp.body
         end
 
         define_method "test_#{adapter}_HEAD_send_url_encoded_params" do
           resp = create_connection(adapter).head do |req|
             req.url 'hello', 'name' => 'zack'
           end
-          assert_match /text\/html/, resp.headers['content-type']
+          assert_match(/text\/html/, resp.headers['content-type'])
         end
 
         define_method "test_#{adapter}_HEAD_retrieves_no_response_body" do
@@ -121,43 +132,49 @@ else
         end
 
         define_method "test_#{adapter}_HEAD_retrieves_the_response_headers" do
-          assert_match /text\/html/, create_connection(adapter).head('hello_world').headers['content-type']
+          assert_match(/text\/html/, create_connection(adapter).head('hello_world').headers['content-type'])
         end
 
         define_method "test_#{adapter}_DELETE_retrieves_the_response_headers" do
-          assert_match /text\/html/, create_connection(adapter).delete('delete_with_json').headers['content-type']
+          assert_match(/text\/html/, create_connection(adapter).delete('delete_with_json').headers['content-type'])
         end
 
         define_method "test_#{adapter}_DELETE_retrieves_the_body" do
-          assert_match /deleted/, create_connection(adapter).delete('delete_with_json').body
+          assert_match(/deleted/, create_connection(adapter).delete('delete_with_json').body)
         end
 
-        define_method "test_#{adapter}_async_requests_clear_parallel_manager_after_running_a_single_request" do
-          connection = create_connection(adapter)
-          assert !connection.in_parallel?
-          resp = connection.get('hello_world')
-          assert !connection.in_parallel?
-          assert_equal 'hello world', connection.get('hello_world').body
-        end
+        if :default != adapter and adapter.supports_parallel?
+          define_method "test_#{adapter}_in_parallel" do
+            resp1, resp2 = nil, nil
 
-        define_method "test_#{adapter}_async_requests_uses_parallel_manager_to_run_multiple_json_requests" do
-          resp1, resp2 = nil, nil
+            connection = create_connection(adapter)
+            klass      = real_adapter_for(adapter)
 
-          connection = create_connection(adapter)
-          adapter    = real_adapter_for(adapter)
-
-          connection.in_parallel(adapter.setup_parallel_manager) do
-            resp1 = connection.get('json')
-            resp2 = connection.get('json')
-            if adapter.supports_parallel_requests?
+            connection.in_parallel do
+              resp1 = connection.get('echo?a=1')
+              resp2 = connection.get('echo?b=2')
               assert connection.in_parallel?
               assert_nil resp1.body
               assert_nil resp2.body
             end
+            assert !connection.in_parallel?
+            assert_equal 'get ?{"a"=>"1"}', resp1.body
+            assert_equal 'get ?{"b"=>"2"}', resp2.body
           end
-          assert !connection.in_parallel?
-          assert_equal '[1,2,3]', resp1.body
-          assert_equal '[1,2,3]', resp2.body
+        else
+          define_method "test_#{adapter}_no_parallel_support" do
+            connection = create_connection(adapter)
+            response = nil
+
+            err = capture_warnings do
+              connection.in_parallel do
+                response = connection.get('echo').body
+              end
+            end
+            assert response
+            assert_match "no parallel-capable adapter on Faraday stack", err
+            assert_match __FILE__, err
+          end
         end
 
         if adapter.to_s == "Faraday::Adapter::EMSynchrony"
@@ -173,9 +190,19 @@ else
             end
           end
         end
+
+        # https://github.com/eventmachine/eventmachine/pull/289
+        unless %w[Faraday::Adapter::EMHttp Faraday::Adapter::EMSynchrony Faraday::Adapter::Excon].include?(adapter.to_s)
+          define_method "test_#{adapter}_timeout" do
+            conn = create_connection(adapter, :request => {:timeout => 1, :open_timeout => 1})
+            assert_raise Faraday::Error::TimeoutError do
+              conn.get '/slow'
+            end
+          end
+        end
       end
 
-      def create_connection(adapter)
+      def create_connection(adapter, options = {})
         if adapter == :default
           builder_block = nil
         else
@@ -185,8 +212,8 @@ else
             b.use adapter
           end
         end
-        
-        Faraday::Connection.new(LIVE_SERVER, &builder_block).tap do |conn|
+
+        Faraday::Connection.new(LIVE_SERVER, options, &builder_block).tap do |conn|
           conn.headers['X-Faraday-Adapter'] = adapter.to_s
           adapter_handler = conn.builder.handlers.last
           conn.builder.insert_before adapter_handler, Faraday::Response::RaiseError
@@ -195,7 +222,7 @@ else
 
       def real_adapter_for(adapter)
         if adapter == :default
-          Faraday::Adapter.lookup_module(Faraday.default_adapter)
+          Faraday::Adapter.lookup_middleware(Faraday.default_adapter)
         else
           adapter
         end
